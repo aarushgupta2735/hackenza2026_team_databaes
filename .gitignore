@@ -3,6 +3,15 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Audio classifier generated artifacts
+*.npy
+*.joblib
+src/audio-language-classifier/data/processed/
+src/audio-language-classifier/data/embeddings/
+src/audio-language-classifier/models/
+src/audio-language-classifier/outputs/
+src/audio-language-classifier/logs/
+
 # C extensions
 *.so
 
