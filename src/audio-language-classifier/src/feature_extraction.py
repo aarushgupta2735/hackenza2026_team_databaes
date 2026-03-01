@@ -1,15 +1,22 @@
 """
-Feature extraction using wav2vec2-xls-r-300m.
+Feature extraction using Facebook MMS-LID (Massively Multilingual Speech -
+Language Identification) model.
 
-Produces a (1024,) mean-pooled embedding per audio segment.
-Supports batched extraction with GPU acceleration.
+The MMS-LID model is a wav2vec2 model specifically fine-tuned for language
+identification across 256 languages.  We extract the *projector* output
+(compact, speaker-invariant language embeddings) rather than the raw
+hidden states, because the projector was trained to maximise language
+discrimination.
+
+Produces a (EMBEDDING_DIM,) language embedding per audio segment.
+Supports batched extraction with checkpointing.
 """
 
 import os
 import numpy as np
 import torch
 from tqdm.auto import tqdm
-from transformers import Wav2Vec2Model, Wav2Vec2FeatureExtractor
+from transformers import Wav2Vec2ForSequenceClassification, AutoFeatureExtractor
 
 from src.config.settings import (
     WAV2VEC_MODEL, SAMPLE_RATE, BATCH_SIZE, DEVICE,
@@ -18,50 +25,83 @@ from src.config.settings import (
 
 
 class Wav2VecExtractor:
-    """Extracts mean-pooled wav2vec2 embeddings from audio arrays."""
+    """Extracts language embeddings from audio using MMS-LID model.
+
+    Uses the projector output of the fine-tuned MMS Language-ID model
+    to produce speaker-invariant, language-discriminative embeddings.
+    """
 
     def __init__(self, model_name: str = WAV2VEC_MODEL, device: str = DEVICE):
         self.device = device
         print(f"Loading {model_name} on {device}...")
-        self.processor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
-        self.model = Wav2Vec2Model.from_pretrained(model_name).to(device)
+
+        self.processor = AutoFeatureExtractor.from_pretrained(model_name)
+        self.model = Wav2Vec2ForSequenceClassification.from_pretrained(
+            model_name
+        ).to(device)
         self.model.eval()
+
+        # Prefer the projector for compact language embeddings
+        self.has_projector = hasattr(self.model, "projector")
+        if self.has_projector:
+            self.embed_dim = self.model.config.classifier_proj_size
+            print(f"  Using projector → {self.embed_dim}-dim language embeddings")
+        else:
+            self.embed_dim = self.model.config.hidden_size
+            print(f"  Using hidden states → {self.embed_dim}-dim embeddings")
+
         total = sum(p.numel() for p in self.model.parameters())
         print(f"  Model loaded: {total:,} parameters")
+
+    # ── Core embedding logic ──────────────────────────────────────
+
+    def _get_embeddings(self, input_values: torch.Tensor,
+                        attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+        """Return (B, embed_dim) language embeddings."""
+        with torch.no_grad():
+            backbone_out = self.model.wav2vec2(
+                input_values, attention_mask=attention_mask
+            )
+            hidden = backbone_out.last_hidden_state        # (B, T, H)
+
+            if self.has_projector:
+                projected = self.model.projector(hidden)   # (B, T, proj_dim)
+                return projected.mean(dim=1)               # (B, proj_dim)
+            return hidden.mean(dim=1)                      # (B, H)
+
+    # ── Public API ────────────────────────────────────────────────
 
     def extract_single(self, waveform: np.ndarray) -> np.ndarray:
         """Extract embedding for a single waveform (1-D float32 array).
 
-        Returns a (EMBEDDING_DIM,) numpy array.
+        Returns a (embed_dim,) numpy array.
         """
         inputs = self.processor(
             [waveform], sampling_rate=SAMPLE_RATE,
             return_tensors="pt", padding=True,
         )
-        input_values = inputs.input_values.to(self.device)
+        iv = inputs.input_values.to(self.device)
+        am = inputs.get("attention_mask")
+        if am is not None:
+            am = am.to(self.device)
 
-        with torch.no_grad():
-            outputs = self.model(input_values)
-            embedding = outputs.last_hidden_state.mean(dim=1)  # (1, 1024)
-
-        return embedding.cpu().numpy().squeeze()
+        return self._get_embeddings(iv, am).cpu().numpy().squeeze()
 
     def extract_batch(self, waveforms: list[np.ndarray]) -> np.ndarray:
         """Extract embeddings for a batch of waveforms.
 
-        Returns an (N, EMBEDDING_DIM) numpy array.
+        Returns an (N, embed_dim) numpy array.
         """
         inputs = self.processor(
             waveforms, sampling_rate=SAMPLE_RATE,
             return_tensors="pt", padding=True,
         )
-        input_values = inputs.input_values.to(self.device)
+        iv = inputs.input_values.to(self.device)
+        am = inputs.get("attention_mask")
+        if am is not None:
+            am = am.to(self.device)
 
-        with torch.no_grad():
-            outputs = self.model(input_values)
-            embeddings = outputs.last_hidden_state.mean(dim=1)
-
-        return embeddings.cpu().numpy()
+        return self._get_embeddings(iv, am).cpu().numpy()
 
     def extract_from_npy_files(self, npy_paths: list[str],
                                batch_size: int = BATCH_SIZE,
@@ -71,7 +111,7 @@ class Wav2VecExtractor:
         Supports checkpointing: if `cache_path` is given and a partial
         result exists, resumes from where it left off.
 
-        Returns an (N, EMBEDDING_DIM) numpy array.
+        Returns an (N, embed_dim) numpy array.
         """
         # Resume support
         start_idx = 0
@@ -108,7 +148,7 @@ class Wav2VecExtractor:
                         f"OOM at batch {i}. Reduce batch_size (currently {batch_size})."
                     ) from e
                 print(f"  ⚠ Batch {i} error: {e}")
-                all_embeds.append(np.zeros((len(batch_paths), EMBEDDING_DIM)))
+                all_embeds.append(np.zeros((len(batch_paths), self.embed_dim)))
 
             # Checkpoint every 100 batches
             if ckpt_path and ((i // batch_size + 1) % 100 == 0):
@@ -140,5 +180,5 @@ def get_extractor() -> Wav2VecExtractor:
 
 
 def extract_features(waveform: np.ndarray) -> np.ndarray:
-    """Extract a (1024,) embedding from a single waveform."""
+    """Extract a language embedding from a single waveform."""
     return get_extractor().extract_single(waveform)

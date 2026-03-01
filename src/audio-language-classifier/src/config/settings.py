@@ -1,7 +1,7 @@
 """
 Configuration settings for the audio language classifier.
 
-Architecture: wav2vec2-xls-r-300m (frozen) → mean-pooled embeddings → LightGBM / SVM / LR
+Architecture: MMS-LID-256 (fine-tuned for language ID) → projector embeddings → PCA → LightGBM / SVM / LR
 """
 
 import os
@@ -62,9 +62,11 @@ SAMPLE_RATE    = 16_000          # wav2vec2 expects 16 kHz
 SEGMENT_SEC    = 3.0             # each clip padded/trimmed to this
 TARGET_SAMPLES = int(SAMPLE_RATE * SEGMENT_SEC)  # 48 000
 
-# ── Feature extraction (wav2vec2) ─────────────────────────────────
-WAV2VEC_MODEL   = "facebook/wav2vec2-xls-r-300m"  # multilingual, 300M params
-EMBEDDING_DIM   = 1024                             # hidden size of xls-r-300m
+# ── Feature extraction (MMS-LID) ──────────────────────────────────
+# MMS-LID-256: wav2vec2 fine-tuned for language identification (256 languages).
+# Its projector layer outputs compact, speaker-invariant language embeddings.
+WAV2VEC_MODEL   = "facebook/mms-lid-256"           # language ID, 256 languages
+EMBEDDING_DIM   = 256                              # projector output of MMS-LID
 BATCH_SIZE      = 16                               # for embedding extraction
 DEVICE          = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -75,23 +77,31 @@ TEST_RATIO  = 0.15
 SAMPLES_PER_LANGUAGE = 500       # samples to stream per language from Common Voice
 
 # ── Classifier hyperparameters ────────────────────────────────────
-# LightGBM (primary)
+# ── PCA dimensionality reduction ──────────────────────────
+PCA_COMPONENTS = 64   # Aggressive reduction to force generalization
+
+# LightGBM (primary) — heavily regularized
 LGB_PARAMS = {
-    "n_estimators":  500,
-    "learning_rate": 0.05,
-    "num_leaves":    63,
-    "max_depth":     8,
-    "class_weight":  "balanced",
-    "random_state":  42,
-    "n_jobs":        -1,
-    "verbose":       -1,
+    "n_estimators":     200,
+    "learning_rate":    0.03,
+    "num_leaves":       15,
+    "max_depth":        4,
+    "min_child_samples": 30,
+    "reg_alpha":        5.0,
+    "reg_lambda":       5.0,
+    "subsample":        0.6,
+    "colsample_bytree": 0.6,
+    "class_weight":     "balanced",
+    "random_state":     42,
+    "n_jobs":           -1,
+    "verbose":          -1,
 }
-LGB_EARLY_STOPPING = 50
+LGB_EARLY_STOPPING = 20
 
 # SVM (secondary) — subsampled to MAX_SVM_SAMPLES for speed
 SVM_PARAMS = {
     "kernel":       "rbf",
-    "C":            10,
+    "C":            1.0,
     "gamma":        "scale",
     "class_weight": "balanced",
     "probability":  True,
@@ -99,18 +109,19 @@ SVM_PARAMS = {
 }
 MAX_SVM_SAMPLES = 5000
 
-# Logistic Regression (baseline)
+# Logistic Regression (baseline) — moderate L2 regularization
 LR_PARAMS = {
-    "C":           1.0,
+    "C":           0.1,
     "class_weight": "balanced",
-    "max_iter":    2000,
+    "max_iter":    3000,
     "multi_class": "multinomial",
     "random_state": 42,
     "n_jobs":      -1,
 }
 
 # ── Model file names ─────────────────────────────────────────────
-SCALER_PATH   = os.path.join(MODEL_DIR, "scaler.joblib")
+SCALER_PATH    = os.path.join(MODEL_DIR, "scaler.joblib")
+PCA_PATH       = os.path.join(MODEL_DIR, "pca.joblib")
 LGB_MODEL_PATH = os.path.join(MODEL_DIR, "lgb_model.joblib")
 SVM_MODEL_PATH = os.path.join(MODEL_DIR, "svm_model.joblib")
 LR_MODEL_PATH  = os.path.join(MODEL_DIR, "lr_model.joblib")

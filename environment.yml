@@ -1,0 +1,28 @@
+name: native-classifier
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pytorch::pytorch
+  - pytorch::torchaudio
+  - pytorch::torchvision
+  - pytorch::cpuonly
+  - numpy
+  - scipy
+  - pandas
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - librosa
+  - jupyterlab
+  - tqdm
+  - pip
+  - pip:
+    - soundfile
+    - transformers
+    - datasets
+    - accelerate
+    - evaluate
+    - audiomentations
+    - opensmile

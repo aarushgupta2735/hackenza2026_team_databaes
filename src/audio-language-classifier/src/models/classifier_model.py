@@ -13,13 +13,14 @@ import lightgbm as lgb
 from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 from sklearn.metrics import accuracy_score, f1_score
 
 from src.config.settings import (
     LGB_PARAMS, LGB_EARLY_STOPPING,
     SVM_PARAMS, MAX_SVM_SAMPLES,
-    LR_PARAMS,
-    SCALER_PATH, LGB_MODEL_PATH, SVM_MODEL_PATH, LR_MODEL_PATH,
+    LR_PARAMS, PCA_COMPONENTS,
+    SCALER_PATH, PCA_PATH, LGB_MODEL_PATH, SVM_MODEL_PATH, LR_MODEL_PATH,
     BEST_MODEL_PATH,
 )
 
@@ -29,19 +30,25 @@ class EnsembleClassifier:
 
     def __init__(self):
         self.scaler = StandardScaler()
+        self.pca = PCA(n_components=PCA_COMPONENTS, random_state=42)
         self.lgb_model = None
         self.svm_model = None
         self.lr_model = None
         self.best_model = None
         self.best_name = None
 
-    # ── Scaling ───────────────────────────────────────────────────
+    # ── Scaling + PCA ─────────────────────────────────────────────
 
     def fit_scaler(self, X_train: np.ndarray) -> np.ndarray:
-        return self.scaler.fit_transform(X_train)
+        X_scaled = self.scaler.fit_transform(X_train)
+        X_reduced = self.pca.fit_transform(X_scaled)
+        var = sum(self.pca.explained_variance_ratio_) * 100
+        print(f"  PCA: {X_train.shape[1]} → {PCA_COMPONENTS} dims "
+              f"({var:.1f}% variance retained)")
+        return X_reduced
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        return self.scaler.transform(X)
+        return self.pca.transform(self.scaler.transform(X))
 
     # ── Training ──────────────────────────────────────────────────
 
@@ -133,8 +140,9 @@ class EnsembleClassifier:
     # ── Save / Load ───────────────────────────────────────────────
 
     def save(self):
-        """Save all models and the scaler to disk."""
+        """Save all models, scaler, and PCA to disk."""
         joblib.dump(self.scaler, SCALER_PATH)
+        joblib.dump(self.pca, PCA_PATH)
         if self.lgb_model:
             joblib.dump(self.lgb_model, LGB_MODEL_PATH)
         if self.svm_model:
@@ -151,6 +159,7 @@ class EnsembleClassifier:
         model_type: 'best', 'lgb', 'svm', or 'lr'
         """
         self.scaler = joblib.load(SCALER_PATH)
+        self.pca = joblib.load(PCA_PATH)
 
         path_map = {
             "best": BEST_MODEL_PATH,
