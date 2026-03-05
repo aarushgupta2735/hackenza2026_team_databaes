@@ -1,4 +1,4 @@
-# 🎙️ Arabic Native vs. Non-Native Speaker Classifier
+# Arabic Native vs. Non-Native Speaker Classifier
 
 > **Hackenza 2026 — Team Databaes**
 
@@ -6,7 +6,7 @@ A 10-stage automated ML pipeline that classifies Arabic speakers as **native or 
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
 - [Overview](#overview)
 - [Architecture](#architecture)
